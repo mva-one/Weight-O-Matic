@@ -6,13 +6,33 @@
 #include <CtrlBtn.h>
 #include <CtrlEnc.h>
 
-#define VERSION F("v0.6")
+#define VERSION F("v0.7")
 
-#define PIN_BEEP 9
-#define PIN_SW_1 5
-#define PIN_SW_COM 6
-#define PIN_SW_2 7
-#define PIN_OUTPUT 8
+#define PIN_BEEP 9              // 9 <-(rot)-> Piepser
+#define PIN_SW_1 5              // 5 <-(braun)-> Schalter 'I'
+#define PIN_SW_COM 6            // 5 <-(schwarz)-> Schalter Common
+#define PIN_SW_2 7              // 5 <-(braun)-> Schalter 'II'
+#define PIN_OUTPUT 8            // 8 <-(rot)-> Schaltmodul
+#define PIN_HX711_DAT 11        // 11 <-(grün)-> DT HX711
+#define PIN_HX711_SCK 10        // 10 <-(weiß)-> SCK HX711
+#define PIN_ENCODER_CLK 3       // 3 <-(blau)-> CLK Dreh/Drückschalter
+#define PIN_ENCODER_DAT 4       // 4 <-(grün)-> DAT Dreh/Drückschalter
+#define PIN_ENCODER_BTN 2       // 2<-(braun)-> SW Dreh/Drückschalter
+// I2C Pins sind default:       // A5 <-(blau)-> SCL     A4 <-(grün)-> SDA  
+
+#define BEEP_FREQ_LEFT 1350
+#define BEEP_FREQ_RIGHT 1100
+#define BEEP_FREQ_CLICK 925
+#define BEEP_LENGTH_TURN 15
+#define BEEP_LENGTH_SHORT 40
+#define BEEP_LENGTH_LONG 250
+
+#define BEEP_FREQ_A5 880
+#define BEEP_FREQ_F5 698
+#define BEEP_FREQ_G5 784
+#define BEEP_FREQ_B5 932
+#define BEEP_UNIT_LENGTH 62
+#define BEEP_END_REPETITIONS 4
 
 #define SERIAL_ENABLED
 
@@ -24,9 +44,8 @@
 #define DEFAULT_P2_OFFSET 2000
 #define DEFAULT_TOGGLESETTINGS 0b11000000
 
-HX711_ADC LoadCell(11, 10);     // 11 <-(green)-> DT     10 <-(white)-> SCK
-LCD_I2C lcd(0x27, 16, 2);       // A5 <-(blue)-> SCL     A4 <-(green)-> SDA
 
+// EEPROM-Adressen für verschiedene Einstellungen:
 const uint16_t addr_cal_value = 0x10;   // data type: float (4 bytes)  - addr. 0x10 - 0x13
 const uint16_t addr_tar_value = 0x14;   // data type: long  (4 bytes)  - addr. 0x14 - 0x17
 const uint16_t addr_saved_flag = 0x18;  // data type: bool  (1 byte)   - addr. 0x18
@@ -46,12 +65,11 @@ const uint16_t addr_settings_saved_flag = 0x33;   // stores bool (1B) - addr. 0x
 //       6 -> endtone enabled
 
 
-uint32_t t = 0;
-uint32_t t_switch = 0;
+
+
+
 const uint32_t t_intv_switch = 276;
 
-uint32_t t_weight = 0;
-const uint32_t t_intv_weight = 1234;
 
 const uint32_t t_timeout_weight_reading = 2024;
 
@@ -61,9 +79,6 @@ bool sw_event = false;
 
 long s6_known_mass_g = 1550;
 bool s6_known_mass_ok = true;
-
-bool target_fill_active = false;
-bool target_fill_finished = false;
 
 long current_weight_g = 13420;
 long s22_target_g = 5400;
@@ -86,12 +101,12 @@ long t_last_target_duration = 0;
 // audio
 bool use_keytones = true;
 bool use_endtone = true;
+int endtone_repetitions_done = 0;
 
 
 // LCD menu
 bool redraw_screen = true;
-uint32_t t_screen = 0;
-uint32_t t_intv_screen = 100;
+const uint32_t t_intv_screen = 100;
 
 // Menu List:
 uint8_t state = 0;
@@ -99,13 +114,18 @@ uint8_t sub_state = 0;
 
 bool output_enabled = true;
 
+// Hardware aus Libraries
+HX711_ADC loadcell  (PIN_HX711_DAT, PIN_HX711_SCK);
+LCD_I2C   lcd       (0x27, 16, 2);
+
 // quick and dirty ;)
 unsigned int pow10(unsigned int exponent) {
   static unsigned int pow10[10] = {1, 10, 100, 1000, 10000};
   return pow10[exponent]; 
 }
 
-void(* reset_function) (void) = 0; // JUST SHUT UP AND RESET!
+// Einfache Prozedur für Software-Reset
+void(* reset_function) (void) = 0;
 
 void disableOutput() {
   digitalWrite(PIN_OUTPUT, LOW);
@@ -123,6 +143,7 @@ void enableOutput() {
   #endif
 }
 
+// Einstellungs-Bitvektor aus den aktuell aktiven Einstellungen erstellen
 uint8_t getToggleSettingsFromState() {
   uint8_t settings_bitvector = 0;
   settings_bitvector = use_keytones ? settings_bitvector | 1 << 7 : settings_bitvector & ~ (1 << 7);
@@ -130,13 +151,14 @@ uint8_t getToggleSettingsFromState() {
   return settings_bitvector;
 }
 
+// Aktive Einstellungen aus Einstellungs-Bitvektor übernehmen
 void setToggleSettingsFromBitvector(uint8_t settings_bitvector) {
   use_keytones = (settings_bitvector & (1 << 7)) >> 7;
   use_endtone = (settings_bitvector & (1 << 6)) >> 6;
 }
 
-long w = 0;
 void drawCurrentWeight(long* weigth, long* offset = nullptr) {
+  static long w = 0;
   w = offset==nullptr ? *weigth : *weigth - *offset;
   lcd.setCursor(1,0);
   if (w < 0) {
@@ -425,10 +447,9 @@ void stateTransition(uint8_t targetState, uint8_t targetSubState = 0) {
 }
 
 void onTurnRight() {
-  if (use_keytones) tone(PIN_BEEP, 1100, 15);
-  #ifdef SERIAL_ENABLED
-  Serial.println("Rotary turned right.");
-  #endif
+  static bool beep;
+  beep = true;
+  redraw_screen = true;
 
   switch (state) {
     case 6: {
@@ -437,19 +458,16 @@ void onTurnRight() {
         if (s6_known_mass_g > 42000) s6_known_mass_g = 42000;
       } 
       else s6_known_mass_ok = !s6_known_mass_ok;
-      redraw_screen = true;
       break;
     }
     case 7: 
     case 10: {
       sub_state = (sub_state+1) % 2;
-      redraw_screen = true;
       break;
     }
     case 12:
     case 17: {
       sub_state = (sub_state+1) % 3;
-      redraw_screen = true;
       break;
     }
     case 15: {
@@ -458,7 +476,6 @@ void onTurnRight() {
         if (s12_target_g > 42000) s12_target_g = 42000;
       } 
       else s15_target_ok = !s15_target_ok;
-      redraw_screen = true;
       break;
     }
     case 16: {
@@ -467,7 +484,6 @@ void onTurnRight() {
         if (s12_tara_offset_g > 9990) s12_tara_offset_g = 9990;
       } 
       else s16_tara_offset_ok = !s16_tara_offset_ok;
-      redraw_screen = true;
       break;
     }
     case 20: {
@@ -476,7 +492,6 @@ void onTurnRight() {
         if (s17_target_g > 42000) s17_target_g = 42000;
       } 
       else s20_target_ok = !s20_target_ok;
-      redraw_screen = true;
       break;
     }
     case 21: {
@@ -485,12 +500,10 @@ void onTurnRight() {
         if (s17_tara_offset_g > 9990) s17_tara_offset_g = 9990;
       } 
       else s21_tara_offset_ok = !s21_tara_offset_ok;
-      redraw_screen = true;
       break;
     }
     case 22: {
       sub_state = (sub_state+1) % 3;
-      redraw_screen = true;
       break;
     }
     case 25: {
@@ -499,27 +512,33 @@ void onTurnRight() {
         if (s22_target_g > 42000) s22_target_g = 42000;
       } 
       else s22_target_ok = !s22_target_ok;
-      redraw_screen = true;
       break;
     }
     case 26: {
       sub_state = (sub_state+1) % 6;
-      redraw_screen = true;
       break;
     }
     case 27: {
       sub_state = (sub_state+1) % 2;
-      redraw_screen = true;
       break;
     }
+    default: {
+      redraw_screen = false;
+      beep = false;
+    }
   }
+
+  if (beep && use_keytones) tone(PIN_BEEP, BEEP_FREQ_RIGHT, BEEP_LENGTH_TURN);
+  
+  #ifdef SERIAL_ENABLED
+  Serial.println("Rotary turned right.");
+  #endif
 }
 
 void onTurnLeft() {
-  if (use_keytones) tone(PIN_BEEP, 1350, 15);
-  #ifdef SERIAL_ENABLED
-  Serial.println("Rotary turned left.");
-  #endif
+  static bool beep;
+  beep = true;
+  redraw_screen = true;
 
   switch (state) {
     case 6: {
@@ -528,19 +547,16 @@ void onTurnLeft() {
         if (s6_known_mass_g < 10) s6_known_mass_g = 10;
       } 
       else s6_known_mass_ok = !s6_known_mass_ok;
-      redraw_screen = true;
       break;
     }
     case 7: 
     case 10: {
       sub_state = (sub_state+1) % 2;
-      redraw_screen = true;
       break;
     }
     case 12:
     case 17: {
       sub_state = (sub_state+2) % 3;
-      redraw_screen = true;
       break;
     }    
     case 15: {
@@ -549,7 +565,6 @@ void onTurnLeft() {
         if (s12_target_g < 100) s12_target_g = 100;
       } 
       else s15_target_ok = !s15_target_ok;
-      redraw_screen = true;
       break;
     }
     case 16: {
@@ -558,7 +573,6 @@ void onTurnLeft() {
         if (s12_tara_offset_g < 10) s12_tara_offset_g = 10;
       } 
       else s16_tara_offset_ok = !s16_tara_offset_ok;
-      redraw_screen = true;
       break;
     }
     case 20: {
@@ -567,7 +581,6 @@ void onTurnLeft() {
         if (s17_target_g < 100) s17_target_g = 100;
       } 
       else s20_target_ok = !s20_target_ok;
-      redraw_screen = true;
       break;
     }
     case 21: {
@@ -576,12 +589,10 @@ void onTurnLeft() {
         if (s17_tara_offset_g < 10) s17_tara_offset_g = 10;
       } 
       else s21_tara_offset_ok = !s21_tara_offset_ok;
-      redraw_screen = true;
       break;
     }
     case 22: {
       sub_state = (sub_state+2) % 3;
-      redraw_screen = true;
       break;
     }
     case 25: {
@@ -590,28 +601,30 @@ void onTurnLeft() {
         if (s22_target_g < 100) s22_target_g = 100;
       } 
       else s22_target_ok = !s22_target_ok;
-      redraw_screen = true;
       break;
     }
     case 26: {
       sub_state = (sub_state+5) % 6;
-      redraw_screen = true;
       break;
     }
     case 27: {
       sub_state = (sub_state+1) % 2;
-      redraw_screen = true;
       break;
     }
+    default: {
+      redraw_screen = false;
+      beep = false;
+    }
   }
+
+  if (beep && use_keytones) tone(PIN_BEEP, BEEP_FREQ_LEFT, BEEP_LENGTH_TURN);
+  
+  #ifdef SERIAL_ENABLED
+  Serial.println("Rotary turned left.");
+  #endif
 }
 
-void shortClick_enc() {
-  if (use_keytones) tone(PIN_BEEP, 925, 40);
-  #ifdef SERIAL_ENABLED
-  Serial.println("Rotary button short click.");
-  #endif
-
+void shortClick_enc(bool beep = true) {
   switch (state) {
     case 2: {
       reset_function();
@@ -650,12 +663,39 @@ void shortClick_enc() {
       else stateTransition(11);
       break;
     }
-    case 12: 
+    case 12: {
+      switch(sub_state) {
+        case 0: {
+          // Starten nur mit langem Klick möglich!
+          beep = false; 
+          break; 
+        }
+        case 1: {
+          stateTransition(16);
+          break;
+        }
+        case 2: {
+          stateTransition(15);
+          break;
+        }
+      }
+      break;
+    }
     case 17: {
       switch(sub_state) {
-        case 0: { stateTransition(state+1); break; }
-        case 1: { stateTransition(state+4); break; }
-        case 2: { stateTransition(state+3); break; }
+        case 0: { 
+          // Starten nur mit langem Klick möglich!
+          beep = false; 
+          break; 
+        }
+        case 1: { 
+          stateTransition(21); 
+          break; 
+          }
+        case 2: {
+          stateTransition(20);
+          break;
+        }
       }
       break;
     }
@@ -712,9 +752,8 @@ void shortClick_enc() {
     case 22: {
       switch (sub_state) {
         case 0: {
-          // TODO
-          // Dosierung starten? Oder wirklich nur bei langem Klick?
-          stateTransition(23);
+          // Starten nur mit langem Klick möglich!
+          beep = false;
           break;
         }
         case 1: {
@@ -773,19 +812,87 @@ void shortClick_enc() {
       else stateTransition(26);
       break;
     }
+    default: {
+      beep = false;
+      break;
+    }
   }
+  
+  if (beep && use_keytones) tone(PIN_BEEP, BEEP_FREQ_CLICK, BEEP_LENGTH_SHORT);
+  
+  #ifdef SERIAL_ENABLED
+  Serial.println("Rotary button short click.");
+  #endif
+}
+
+// das ist nötig, um die Signatur von CtrlBtn::CallbackFunction {aka void (*)()} zu erfüllen.
+void shortClick_enc() {
+  shortClick_enc(true);
 }
 
 void longClick_enc() {
-  if (use_keytones) tone(PIN_BEEP, 925, 250);
+  static bool beep;
+  beep = true;
+
+  switch (state) {
+    case 4:
+    case 5:
+    case 9:
+    case 13:
+    case 14:
+    case 18:
+    case 19:
+    case 23: 
+    case 24: {
+      // in diesen Fällen ist lang-Klick äquivalent zu kurz-Klick
+      shortClick_enc(false);
+      break;
+    }
+    case 6: {
+      sub_state = 4;
+      shortClick_enc(false);
+      break;
+    }
+    case 12: {
+      if (sub_state == 0) stateTransition(13);
+      break;
+    }
+    case 15:
+    case 16:
+    case 20:
+    case 21:
+    case 25: {
+      // in diesen Fällen ist lang-Klick äquivalent zu "speichern" bei 3stelligen Eingaben
+      sub_state = 3;
+      shortClick_enc(false);
+      break;
+    }
+    case 17: {
+      if (sub_state == 0) stateTransition(18);
+      break;
+    }
+    case 22: {
+      if (sub_state == 0) stateTransition(23);
+      break;
+    }
+    default: {
+      beep = false;
+      break;
+    }
+  }
+  
+  if (beep && use_keytones) tone(PIN_BEEP, BEEP_FREQ_CLICK, BEEP_LENGTH_LONG);
+  
   #ifdef SERIAL_ENABLED
   Serial.println("Rotary button long click.");
   #endif
-
 }
 
-CtrlEnc encoder(3, 4, onTurnRight, onTurnLeft);                   // 3 <-> CLK    4 <-> DT     2 <-> SW
-CtrlBtn btn_enc(2, 20, nullptr, shortClick_enc, longClick_enc);
+
+
+// Hardware aus Libraries
+CtrlEnc   encoder   (PIN_ENCODER_CLK, PIN_ENCODER_DAT, onTurnRight, onTurnLeft);
+CtrlBtn   btn_enc   (PIN_ENCODER_BTN, 20, nullptr, shortClick_enc, longClick_enc);
 
 void setup() {
   pinMode(PIN_SW_COM, OUTPUT);
@@ -803,13 +910,14 @@ void setup() {
   Serial.println("Starting...");
   #endif
 
+  // Eigene Zeichen für das Display
   uint8_t cursor[8] = {0b10000,0b11000,0b11100,0b11110,0b11100,0b11000,0b10000,0};
   uint8_t check[8] = {0,0b00001,0b00011,0b00010,0b10110,0b11100,0b01000,0};
   uint8_t cross[8] = {0,0b10001,0b11011,0b01110,0b01110,0b11011,0b10001,0};
   uint8_t infty[8] = {0,0,0b01010,0b10101,0b10101,0b01010,0,0};
   uint8_t back[8] = {0b00100,0b01000,0b11110,0b01001,0b00101,0b00001,0b00110,0};
-  uint8_t up[8] = {0b00100,0b01110,0b11111,0,0,0,0,0};
-  uint8_t down[8] = {0,0,0,0,0,0b11111,0b01110,0b00100};
+  // uint8_t up[8] = {0b00100,0b01110,0b11111,0,0,0,0,0};     z.Zt. nicht benötigt
+  // uint8_t down[8] = {0,0,0,0,0,0b11111,0b01110,0b00100};
 
   lcd.begin();
   lcd.backlight();
@@ -818,21 +926,23 @@ void setup() {
   lcd.createChar(2, cross);
   lcd.createChar(3, infty);
   lcd.createChar(4, back);
-  lcd.createChar(5, up);
-  lcd.createChar(6, down);
+  // lcd.createChar(5, up);
+  // lcd.createChar(6, down);
 
-  stateTransition(1);
+
+  // Startbildschirm
+  lcd.clear();
   lcd.setCursor(0,0);
-  lcd.write(0);
-  lcd.print(" Starte...");
+  lcd.print(F(" Weight-O-Matic "));
   lcd.setCursor(0,1);
   lcd.print(VERSION);
-  lcd.setCursor(13,0);
+  lcd.setCursor(6,1);
+  lcd.print("Starte...");
+  lcd.setCursor(15,1);
   lcd.blink();
 
 
-
-  // check if any value is saved as tara offset and calibration. If not so, save default values
+  // Prüfen, ob im EEPROM Werte für Kalibrierung und Tara gespeichert sind. Wenn nicht, Standardwerte laden:
   uint8_t saved_flag = 0;
   EEPROM.get(addr_saved_flag, saved_flag);
   if (saved_flag != 1) {
@@ -844,7 +954,7 @@ void setup() {
     #endif
   }
 
-  // the same for the toggle-settings:
+  // ...das Gleiche für die EInstellungen:
   EEPROM.get(addr_settings_saved_flag, saved_flag);
   if (saved_flag != 1) {
     EEPROM.put(addr_toggle_settings, DEFAULT_TOGGLESETTINGS);
@@ -854,7 +964,7 @@ void setup() {
     #endif
   }
 
-  // ...and for preset 1:
+  // ...für Voreinstellung 1:
   EEPROM.get(addr_p1_saved_flag, saved_flag);
   if (saved_flag != 1) {
     EEPROM.put(addr_p1_target, DEFAULT_P1_TARGET);
@@ -865,7 +975,7 @@ void setup() {
     #endif
   }
 
-  // ...and for preset 2:
+  // ...für Voreinstellung 2:
   EEPROM.get(addr_p2_saved_flag, saved_flag);
   if (saved_flag != 1) {
     EEPROM.put(addr_p2_target, DEFAULT_P2_TARGET);
@@ -879,13 +989,14 @@ void setup() {
   /*  =============================
         Übergang zu Zustand 1
       ============================= */
-  
+  stateTransition(1);
+
   // Kalibrierungseinstellungen aus EEPROM laden
   long tar_offset = 0;
   float cal_value = 0.0f;
   EEPROM.get(addr_tar_value, tar_offset);
   EEPROM.get(addr_cal_value, cal_value);
-  LoadCell.setTareOffset(tar_offset);
+  loadcell.setTareOffset(tar_offset);
   #ifdef SERIAL_ENABLED
   Serial.print(F("Kalibrierungswerte aus EEPROM erfolgreich geladen: "));
   Serial.print(tar_offset);
@@ -916,10 +1027,12 @@ void setup() {
   Serial.println(F("Gespeicherte Einstellungen für VE 2 erfolgreich geladen!"));
   #endif
 
-  LoadCell.begin();
-  LoadCell.start(2000, false);
+  // Wiegezelle initialisieren - 2000ms Startzeit auf Empfehlung der Library
+  loadcell.begin();
+  loadcell.start(2000, false);
 
-  if (LoadCell.getTareTimeoutFlag() || LoadCell.getSignalTimeoutFlag()) {
+  // Prüfen ob eine Verbindung zur Wiegezelle besteht
+  if (loadcell.getTareTimeoutFlag() || loadcell.getSignalTimeoutFlag()) {
     #ifdef SERIAL_ENABLED
     Serial.println(F("Fehler bei der Verbindung MCU <-> HX711."));
     #endif
@@ -927,44 +1040,41 @@ void setup() {
     return;
   }
   else {
-    LoadCell.setCalFactor(cal_value);
+    loadcell.setCalFactor(cal_value);
     #ifdef SERIAL_ENABLED
     Serial.println(F("Wiegezelle erfolgreich initialisiert."));
     #endif
   }
-  while (!LoadCell.update());
+  while (!loadcell.update());
 
-  lcd.clear();
-
+  // Übergang zur loop, mit Zustand, der den Schalter ausliest
   stateTransition(11);
 }
 
 bool break_loop = false;
 void loop() {
+  static uint32_t t;
   t = millis();
-  break_loop = false;
+
+  static uint32_t t_switch = 0;
+  static uint32_t t_last_weight_reading = t;
+  static uint32_t t_screen = 0;
+  static uint32_t t_tone_started = 0;
 
   static float loadcell_reading = 0.0f;
-  static uint32_t t_last_weight_reading = t;
+  
+  break_loop = false;
 
-
-  if (LoadCell.update()) {
+  // Messwert aus Wiegezelle auslesen
+  if (loadcell.update()) {
     t_last_weight_reading = t;
-    loadcell_reading = LoadCell.getData();
+    loadcell_reading = loadcell.getData();
     if (loadcell_reading < -65536) current_weight_g = -65536;
     else if (loadcell_reading > 65536) current_weight_g = 65536;
     else if (current_weight_g != (long)loadcell_reading) {
       current_weight_g = (long)loadcell_reading;
       redraw_screen = true;
     }
-    
-    // if (t - t_weight > t_intv_weight) {
-    //   t_weight = t;
-    //   Serial.print("LoadCell reading / current weight: ");
-    //   Serial.print(current_weight_g);
-    //   Serial.print(" / ");
-    //   Serial.println(current_weight_g);
-    // }
   }
 
   // wenn zu lange kein Messwert mehr gelesen wurde --> Fehlerzustand
@@ -991,7 +1101,7 @@ void loop() {
     case 13: {
       last_target_done_g = current_weight_g - s12_tara_offset_g;
       t_last_target_duration = t - t_last_target_started;
-      if (current_weight_g - s12_tara_offset_g >= s12_target_g) stateTransition(14);
+      if (current_weight_g - s12_tara_offset_g >= s12_target_g) stateTransition(14, 1);
       else if (!output_enabled && current_weight_g - s12_tara_offset_g < s12_target_g) {
         t_last_target_started = t;
         last_target_g = s12_target_g;
@@ -1002,7 +1112,7 @@ void loop() {
     case 18: {
       last_target_done_g = current_weight_g - s17_tara_offset_g;
       t_last_target_duration = t - t_last_target_started;
-      if (current_weight_g - s17_tara_offset_g >= s17_target_g) stateTransition(19); 
+      if (current_weight_g - s17_tara_offset_g >= s17_target_g) stateTransition(19, 1); 
       else if (!output_enabled && current_weight_g - s17_tara_offset_g < s17_target_g) {
         t_last_target_started = t;
         last_target_g = s17_target_g;
@@ -1013,11 +1123,44 @@ void loop() {
     case 23: {
       last_target_done_g = current_weight_g;
       t_last_target_duration = t - t_last_target_started;
-      if (current_weight_g >= s22_target_g) stateTransition(24);
+      if (current_weight_g >= s22_target_g) stateTransition(24, 1);
       else if (!output_enabled && current_weight_g < s22_target_g) {
         t_last_target_started = t;
         last_target_g = s22_target_g;
         enableOutput();
+      }
+      break;
+    }
+    case 14:
+    case 19:
+    case 24: { // in diesen Zuständen ist die Dosierung regulär beendet und es wird die "Ende-Musik" gespielt
+      if (sub_state > 0 && use_endtone) {
+        switch (sub_state) {
+          case 1: { t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_A5, BEEP_UNIT_LENGTH); sub_state++; break; }
+          case 2: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*4) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_F5, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 3: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*2) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_F5, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 4: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*2) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_G5, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 5: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*4) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_F5, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 6: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*8) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_A5, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 7: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*4) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_B5, BEEP_UNIT_LENGTH*4); sub_state++;} break; }          
+          case 8: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*16) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_A5*2, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 9: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*4) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_F5*2, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 10: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*2) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_F5*2, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 11: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*2) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_G5*2, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 12: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*4) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_F5*2, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 13: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*8) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_A5*2, BEEP_UNIT_LENGTH); sub_state++;} break; }
+          case 14: { if (t-t_tone_started>=BEEP_UNIT_LENGTH*4) {t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_B5*2, BEEP_UNIT_LENGTH*4); sub_state++;} break; }
+          case 15: {
+            if (t-t_tone_started>=BEEP_UNIT_LENGTH*32 && endtone_repetitions_done < BEEP_END_REPETITIONS) {
+              sub_state = 1;
+              endtone_repetitions_done++;
+            } else if (endtone_repetitions_done >= BEEP_END_REPETITIONS) {
+              sub_state = 0;
+              endtone_repetitions_done = 0;
+            }
+            break;
+          }
+        }
       }
       break;
     }
@@ -1039,10 +1182,10 @@ void loop() {
       reset_function();
     }
     case 41: {
-      LoadCell.update();
-      LoadCell.tare();
-      long tar_value = LoadCell.getTareOffset();
-      LoadCell.setTareOffset(tar_value);
+      loadcell.update();
+      loadcell.tare();
+      long tar_value = loadcell.getTareOffset();
+      loadcell.setTareOffset(tar_value);
       #ifdef SERIAL_ENABLED
       Serial.print(F("(41) Tara abgeschlossen. Neuer Wert für tara_offset: "));
       Serial.println(tar_value);
@@ -1051,9 +1194,9 @@ void loop() {
       break;
     }
     case 61: {
-      LoadCell.update();
-      LoadCell.refreshDataSet();
-      float cal_value = LoadCell.getNewCalibration(s6_known_mass_g);
+      loadcell.update();
+      loadcell.refreshDataSet();
+      float cal_value = loadcell.getNewCalibration(s6_known_mass_g);
       #ifdef SERIAL_ENABLED
       Serial.print(F("(61) Kalibrierung abgeschlossen. Neuer Wert für cal_value: "));
       Serial.println(cal_value);
@@ -1062,8 +1205,8 @@ void loop() {
       break;
     }
     case 71: {
-      float cal_value = LoadCell.getCalFactor();
-      long tar_value = LoadCell.getTareOffset();
+      float cal_value = loadcell.getCalFactor();
+      long tar_value = loadcell.getTareOffset();
       EEPROM.put(addr_cal_value, cal_value);
       EEPROM.put(addr_tar_value, tar_value);
       EEPROM.put(addr_saved_flag, (uint8_t)1);
@@ -1078,9 +1221,9 @@ void loop() {
     }
     case 91: {
       long tar_value = 0;
-      LoadCell.tare();
-      tar_value = LoadCell.getTareOffset();
-      LoadCell.setTareOffset(tar_value);
+      loadcell.tare();
+      tar_value = loadcell.getTareOffset();
+      loadcell.setTareOffset(tar_value);
       #ifdef SERIAL_ENABLED
       Serial.print(F("(91) Tara abgeschlossen. Neuer Wert für tara_offset: "));
       Serial.println(tar_value);
@@ -1089,7 +1232,7 @@ void loop() {
       break;
     }
     case 101: {
-      long tar_value = LoadCell.getTareOffset();
+      long tar_value = loadcell.getTareOffset();
       EEPROM.put(addr_tar_value, tar_value);
       EEPROM.put(addr_saved_flag, (uint8_t)1);
       #ifdef SERIAL_ENABLED
