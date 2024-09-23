@@ -20,6 +20,7 @@
 #define PIN_ENCODER_BTN 2       // 2<-(braun)-> SW Dreh/Drückschalter
 // I2C Pins sind default:       // A5 <-(blau)-> SCL     A4 <-(grün)-> SDA  
 
+// Tonhöhen und -Längen für Tastentöne
 #define BEEP_FREQ_LEFT 1350
 #define BEEP_FREQ_RIGHT 1100
 #define BEEP_FREQ_CLICK 925
@@ -27,15 +28,18 @@
 #define BEEP_LENGTH_SHORT 40
 #define BEEP_LENGTH_LONG 250
 
+// Tonhöhen in Hz und "Takt" für Ende-Melodie
 #define BEEP_FREQ_A5 880
 #define BEEP_FREQ_F5 698
 #define BEEP_FREQ_G5 784
 #define BEEP_FREQ_B5 932
 #define BEEP_UNIT_LENGTH 62
-#define BEEP_END_REPETITIONS 4
+#define BEEP_END_REPETITIONS 4  // Wiederholungen der Ende-Melodie -> bei 4 Wiederholungen wird 5mal abgespielt
 
+// Debug-Ausgaben über die Serielle Konsole aktivieren (Baud 115200)
 #define SERIAL_ENABLED
 
+// Standardwerte, werden bei leerem EEPROM geladen (z.B. auch nach dem Zurücksetzen über das Menü)
 #define DEFAULT_CAL_FACTOR 28.44
 #define DEFAULT_TAR_OFFSET 8240259
 #define DEFAULT_P1_TARGET 5000
@@ -64,13 +68,10 @@ const uint16_t addr_settings_saved_flag = 0x33;   // stores bool (1B) - addr. 0x
 // (MSB) 7 -> keytones enabled
 //       6 -> endtone enabled
 
-
-
-
-
+// Intervall (ms) zum Auslesen des Modus-Schalters
 const uint32_t t_intv_switch = 276;
 
-
+// Timeout (ms) für Kommunikation mit Wiegezelle
 const uint32_t t_timeout_weight_reading = 2024;
 
 uint8_t sw_pos = 0;
@@ -98,20 +99,19 @@ long last_target_done_g = 0;
 long t_last_target_started = 0;
 long t_last_target_duration = 0;
 
-// audio
+// Audio-Einstellungen
 bool use_keytones = true;
 bool use_endtone = true;
 int endtone_repetitions_done = 0;
 
 
-// LCD menu
+// LCD-Menü und Zustände
 bool redraw_screen = true;
 const uint32_t t_intv_screen = 100;
-
-// Menu List:
 uint8_t state = 0;
 uint8_t sub_state = 0;
 
+// Status-Flag, ob der Ausgang aktiviert ist.
 bool output_enabled = true;
 
 // Hardware aus Libraries
@@ -888,8 +888,6 @@ void longClick_enc() {
   #endif
 }
 
-
-
 // Hardware aus Libraries
 CtrlEnc   encoder   (PIN_ENCODER_CLK, PIN_ENCODER_DAT, onTurnRight, onTurnLeft);
 CtrlBtn   btn_enc   (PIN_ENCODER_BTN, 20, nullptr, shortClick_enc, longClick_enc);
@@ -916,7 +914,7 @@ void setup() {
   uint8_t cross[8] = {0,0b10001,0b11011,0b01110,0b01110,0b11011,0b10001,0};
   uint8_t infty[8] = {0,0,0b01010,0b10101,0b10101,0b01010,0,0};
   uint8_t back[8] = {0b00100,0b01000,0b11110,0b01001,0b00101,0b00001,0b00110,0};
-  // uint8_t up[8] = {0b00100,0b01110,0b11111,0,0,0,0,0};     z.Zt. nicht benötigt
+  // uint8_t up[8] = {0b00100,0b01110,0b11111,0,0,0,0,0};                                 // z.Zt. nicht benötigt
   // uint8_t down[8] = {0,0,0,0,0,0b11111,0b01110,0b00100};
 
   lcd.begin();
@@ -1133,7 +1131,7 @@ void loop() {
     }
     case 14:
     case 19:
-    case 24: { // in diesen Zuständen ist die Dosierung regulär beendet und es wird die "Ende-Musik" gespielt
+    case 24: { // in diesen Zuständen ist die Dosierung regulär beendet und es wird die "Ende-Musik" gespielt. Könnte man sicherlich schöner programmieren! ;)
       if (sub_state > 0 && use_endtone) {
         switch (sub_state) {
           case 1: { t_tone_started = t; tone(PIN_BEEP, BEEP_FREQ_A5, BEEP_UNIT_LENGTH); sub_state++; break; }
@@ -1489,160 +1487,4 @@ void loop() {
       }
     }
   }
-
-
-  //static boolean newDataReady = 0;
-  //const int serialPrintInterval = 3330; //increase value to slow down serial print activity
-
-  
-
-  // check for new data/start next conversion:
-  //if (LoadCell.update()) newDataReady = true;
-
-  // get smoothed value from the dataset:
-  // if (newDataReady) {
-  //   if (millis() > t + serialPrintInterval) {
-  //     float i = LoadCell.getData();
-  //     Serial.print("Load_cell output val: ");
-  //     Serial.println(i);
-  //     newDataReady = 0;
-  //     t = millis();
-  //   }
-  // }
-
-  // receive command from serial terminal
-  // if (Serial.available() > 0) {
-  //   char inByte = Serial.read();
-  //   if (inByte == 't') LoadCell.tareNoDelay(); //tare
-  //   else if (inByte == 'r') calibrate(); //calibrate
-  //   else if (inByte == 'c') changeSavedCalFactor(); //edit calibration value manually
-  // }
-
-  // check if last tare operation is complete
-  // if (LoadCell.getTareStatus() == true) {
-  //   Serial.println("Tare complete");
-  // }
-
 }
-
-// void calibrate() {
-//   Serial.println("***");
-//   Serial.println("Start calibration:");
-//   Serial.println("Place the load cell an a level stable surface.");
-//   Serial.println("Remove any load applied to the load cell.");
-//   Serial.println("Send 't' from serial monitor to set the tare offset.");
-
-//   boolean _resume = false;
-//   while (_resume == false) {
-//     LoadCell.update();
-//     if (Serial.available() > 0) {
-//       if (Serial.available() > 0) {
-//         char inByte = Serial.read();
-//         if (inByte == 't') LoadCell.tareNoDelay();
-//       }
-//     }
-//     if (LoadCell.getTareStatus() == true) {
-//       Serial.println("Tare complete");
-//       _resume = true;
-//     }
-//   }
-
-//   Serial.println("Now, place your known mass on the loadcell.");
-//   Serial.println("Then send the weight of this mass (i.e. 100.0) from serial monitor.");
-
-//   float known_mass = 0;
-//   _resume = false;
-//   while (_resume == false) {
-//     LoadCell.update();
-//     if (Serial.available() > 0) {
-//       known_mass = Serial.parseFloat();
-//       if (known_mass != 0) {
-//         Serial.print("Known mass is: ");
-//         Serial.println(known_mass);
-//         _resume = true;
-//       }
-//     }
-//   }
-
-//   LoadCell.refreshDataSet(); //refresh the dataset to be sure that the known mass is measured correct
-//   float newCalibrationValue = LoadCell.getNewCalibration(known_mass); //get the new calibration value
-
-//   Serial.print("New calibration value has been set to: ");
-//   Serial.print(newCalibrationValue);
-//   Serial.println(", use this as calibration value (calFactor) in your project sketch.");
-//   Serial.print("Save this value to EEPROM adress ");
-//   Serial.print(calVal_eepromAdress);
-//   Serial.println("? y/n");
-
-//   _resume = false;
-//   while (_resume == false) {
-//     if (Serial.available() > 0) {
-//       char inByte = Serial.read();
-//       if (inByte == 'y') {
-//         EEPROM.put(calVal_eepromAdress, newCalibrationValue);
-//         EEPROM.get(calVal_eepromAdress, newCalibrationValue);
-//         Serial.print("Value ");
-//         Serial.print(newCalibrationValue);
-//         Serial.print(" saved to EEPROM address: ");
-//         Serial.println(calVal_eepromAdress);
-//         _resume = true;
-
-//       }
-//       else if (inByte == 'n') {
-//         Serial.println("Value not saved to EEPROM");
-//         _resume = true;
-//       }
-//     }
-//   }
-
-//   Serial.println("End calibration");
-//   Serial.println("***");
-//   Serial.println("To re-calibrate, send 'r' from serial monitor.");
-//   Serial.println("For manual edit of the calibration value, send 'c' from serial monitor.");
-//   Serial.println("***");
-// }
-
-// void changeSavedCalFactor() {
-//   float oldCalibrationValue = LoadCell.getCalFactor();
-//   boolean _resume = false;
-//   Serial.println("***");
-//   Serial.print("Current value is: ");
-//   Serial.println(oldCalibrationValue);
-//   Serial.println("Now, send the new value from serial monitor, i.e. 696.0");
-//   float newCalibrationValue;
-//   while (_resume == false) {
-//     if (Serial.available() > 0) {
-//       newCalibrationValue = Serial.parseFloat();
-//       if (newCalibrationValue != 0) {
-//         Serial.print("New calibration value is: ");
-//         Serial.println(newCalibrationValue);
-//         LoadCell.setCalFactor(newCalibrationValue);
-//         _resume = true;
-//       }
-//     }
-//   }
-//   _resume = false;
-//   Serial.print("Save this value to EEPROM adress ");
-//   Serial.print(calVal_eepromAdress);
-//   Serial.println("? y/n");
-//   while (_resume == false) {
-//     if (Serial.available() > 0) {
-//       char inByte = Serial.read();
-//       if (inByte == 'y') {
-//         EEPROM.put(calVal_eepromAdress, newCalibrationValue);
-//         EEPROM.get(calVal_eepromAdress, newCalibrationValue);
-//         Serial.print("Value ");
-//         Serial.print(newCalibrationValue);
-//         Serial.print(" saved to EEPROM address: ");
-//         Serial.println(calVal_eepromAdress);
-//         _resume = true;
-//       }
-//       else if (inByte == 'n') {
-//         Serial.println("Value not saved to EEPROM");
-//         _resume = true;
-//       }
-//     }
-//   }
-//   Serial.println("End change calibration value");
-//   Serial.println("***");
-// }
