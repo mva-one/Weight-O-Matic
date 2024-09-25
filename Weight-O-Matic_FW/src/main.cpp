@@ -48,6 +48,13 @@
 #define DEFAULT_P2_OFFSET 2000
 #define DEFAULT_TOGGLESETTINGS 0b11000000
 
+#define MAX_WEIGHT_CALIB 99990
+#define MIN_WEIGHT_CALIB 10
+#define MAX_WEIGHT_SETPOINT 99990
+#define MIN_WEIGHT_SETPOINT 100
+#define MIN_WEIGHT_OFFSET 10
+#define MAX_WEIGHT_OFFSET 9990
+
 
 // EEPROM-Adressen für verschiedene Einstellungen:
 const uint16_t addr_cal_value = 0x10;   // data type: float (4 bytes)  - addr. 0x10 - 0x13
@@ -110,6 +117,12 @@ bool redraw_screen = true;
 const uint32_t t_intv_screen = 100;
 uint8_t state = 0;
 uint8_t sub_state = 0;
+/* 
+    Anmerkung des Entwicklers:
+      Ja, die Zustandsnummern sind teilweise einfach völlig durcheinander. 
+      Ja, das ist "historisch gewachsen"... ;)
+      Aber es funktioniert und ich will esnicht ändern.
+ */
 
 // Status-Flag, ob der Ausgang aktiviert ist.
 bool output_enabled = true;
@@ -345,57 +358,28 @@ void stateTransition(uint8_t targetState, uint8_t targetSubState = 0) {
   #endif
 
   switch (targetState) {
-    case 2: {
-      drawScreenForState(2);
-      break;
-    }
-    case 4: {
-      drawScreenForState(4);
-      break;
-    }
-    case 41: {
-      drawScreenForState(41);
-      break;
-    }
-    case 5: {
-      drawScreenForState(5);
-      break;
-    }
-    case 6: {
-      s6_known_mass_ok = true;
-      drawScreenForState(6);
-      break;
-    }
-    case 61: {
-      drawScreenForState(61);
-      break;
-    }
-    case 7: {
-      drawScreenForState(7);
-      break;
-    }
-    case 9: {
-      drawScreenForState(9);
-      break;
-    }
+    case 2: 
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+    case 9:
+    case 10:
+    case 12:
+    case 13:
+    case 14:
+    case 17:
+    case 18:
+    case 19:
+    case 22:
+    case 23:
+    case 24:
+    case 26:
+    case 27:
+    case 41:
+    case 61:
     case 91: {
-      drawScreenForState(91);
-      break;
-    }
-    case 10: {
-      drawScreenForState(10);
-      break;
-    }
-    case 12: {
-      drawScreenForState(12);
-      break;
-    }
-    case 13: {
-      drawScreenForState(13);
-      break;
-    }
-    case 14: {
-      drawScreenForState(14);
+      drawScreenForState(targetState);
       break;
     }
     case 15:
@@ -405,48 +389,16 @@ void stateTransition(uint8_t targetState, uint8_t targetSubState = 0) {
       redraw_screen = true;
       break;
     }
-    case 17: {
-      drawScreenForState(17);
-      break;
-    }
-    case 18: {
-      drawScreenForState(18);
-      break;
-    }
-    case 19: {
-      drawScreenForState(19);
-      break;
-    }
-    case 22: {
-      drawScreenForState(22);
-      break;
-    }
-    case 23: {
-      drawScreenForState(23);
-      break;
-    }
-    case 24: {
-      drawScreenForState(24);
-      break;
-    }
     case 25: {
       s22_target_ok = true;
       redraw_screen = true;
       //drawScreenForState(25);
       break;
     }
-    case 26: {
-      drawScreenForState(26);
-      break;
-    }
-    case 27: {
-      drawScreenForState(27);
-      break;
-    }
   }
 }
 
-void onTurnRight() {
+void onTurn(bool left = false) {
   static bool beep;
   beep = true;
   redraw_screen = true;
@@ -454,72 +406,96 @@ void onTurnRight() {
   switch (state) {
     case 6: {
       if (sub_state < 4) {
-        s6_known_mass_g += pow10(4-sub_state);
-        if (s6_known_mass_g > 42000) s6_known_mass_g = 42000;
+        if (left) {
+          s6_known_mass_g -= pow10(4-sub_state);
+          if (s6_known_mass_g < MIN_WEIGHT_CALIB) s6_known_mass_g = MIN_WEIGHT_CALIB;
+        } else {
+          s6_known_mass_g += pow10(4-sub_state);
+          if (s6_known_mass_g > MAX_WEIGHT_CALIB) s6_known_mass_g = MAX_WEIGHT_CALIB;
+        }
       } 
       else s6_known_mass_ok = !s6_known_mass_ok;
       break;
     }
     case 7: 
-    case 10: {
+    case 10:
+    case 27: {
       sub_state = (sub_state+1) % 2;
       break;
     }
     case 12:
-    case 17: {
-      sub_state = (sub_state+1) % 3;
+    case 17:
+    case 22: {
+      sub_state = left ? (sub_state+2) % 3 : (sub_state+1) % 3;
       break;
     }
     case 15: {
       if (sub_state < 3) {
-        s12_target_g += pow10(4-sub_state);
-        if (s12_target_g > 42000) s12_target_g = 42000;
+        if (left) {
+          s12_target_g -= pow10(4-sub_state);
+          if (s12_target_g < MIN_WEIGHT_SETPOINT) s12_target_g = MIN_WEIGHT_SETPOINT;
+        } else {
+          s12_target_g += pow10(4-sub_state);
+          if (s12_target_g > MAX_WEIGHT_SETPOINT) s12_target_g = MAX_WEIGHT_SETPOINT;
+        }
       } 
       else s15_target_ok = !s15_target_ok;
       break;
     }
     case 16: {
       if (sub_state < 3) {
-        s12_tara_offset_g += pow10(3-sub_state);
-        if (s12_tara_offset_g > 9990) s12_tara_offset_g = 9990;
+        if (left) {
+          s12_tara_offset_g -= pow10(3-sub_state);
+          if (s12_tara_offset_g < MIN_WEIGHT_OFFSET) s12_tara_offset_g = MIN_WEIGHT_OFFSET;
+        } else {
+          s12_tara_offset_g += pow10(3-sub_state);
+          if (s12_tara_offset_g > MAX_WEIGHT_OFFSET) s12_tara_offset_g = MAX_WEIGHT_OFFSET;
+        }
       } 
       else s16_tara_offset_ok = !s16_tara_offset_ok;
       break;
     }
     case 20: {
       if (sub_state < 3) {
-        s17_target_g += pow10(4-sub_state);
-        if (s17_target_g > 42000) s17_target_g = 42000;
+        if (left) {
+          s17_target_g -= pow10(4-sub_state);
+          if (s17_target_g < MIN_WEIGHT_SETPOINT) s17_target_g = MIN_WEIGHT_SETPOINT;
+        } else {
+          s17_target_g += pow10(4-sub_state);
+          if (s17_target_g > MAX_WEIGHT_SETPOINT) s17_target_g = MAX_WEIGHT_SETPOINT;
+        }
       } 
       else s20_target_ok = !s20_target_ok;
       break;
     }
     case 21: {
       if (sub_state < 3) {
-        s17_tara_offset_g += pow10(3-sub_state);
-        if (s17_tara_offset_g > 9990) s17_tara_offset_g = 9990;
+        if (left) {
+          s17_tara_offset_g -= pow10(3-sub_state);
+          if (s17_tara_offset_g < MIN_WEIGHT_OFFSET) s17_tara_offset_g = MIN_WEIGHT_OFFSET;
+        } else {
+          s17_tara_offset_g += pow10(3-sub_state);
+          if (s17_tara_offset_g > MAX_WEIGHT_OFFSET) s17_tara_offset_g = MAX_WEIGHT_OFFSET;
+        }
       } 
       else s21_tara_offset_ok = !s21_tara_offset_ok;
       break;
     }
-    case 22: {
-      sub_state = (sub_state+1) % 3;
-      break;
-    }
     case 25: {
       if (sub_state < 3) {
-        s22_target_g += pow10(4-sub_state);
-        if (s22_target_g > 42000) s22_target_g = 42000;
+        if (left) {
+          s22_target_g -= pow10(4-sub_state);
+          if (s22_target_g < MIN_WEIGHT_SETPOINT) s22_target_g = MIN_WEIGHT_SETPOINT;
+        } else {
+          s22_target_g += pow10(4-sub_state);
+          if (s22_target_g > MAX_WEIGHT_SETPOINT) s22_target_g = MAX_WEIGHT_SETPOINT;
+        }
       } 
       else s22_target_ok = !s22_target_ok;
       break;
     }
     case 26: {
-      sub_state = (sub_state+1) % 6;
-      break;
-    }
-    case 27: {
-      sub_state = (sub_state+1) % 2;
+      sub_state = left ? (sub_state+5) % 6 : (sub_state+1) % 6;
       break;
     }
     default: {
@@ -531,98 +507,13 @@ void onTurnRight() {
   if (beep && use_keytones) tone(PIN_BEEP, BEEP_FREQ_RIGHT, BEEP_LENGTH_TURN);
   
   #ifdef SERIAL_ENABLED
-  Serial.println("Rotary turned right.");
+  if (left) Serial.println("Rotary turned left.");
+  else Serial.println("Rotary turned right.");
   #endif
 }
 
-void onTurnLeft() {
-  static bool beep;
-  beep = true;
-  redraw_screen = true;
-
-  switch (state) {
-    case 6: {
-      if (sub_state < 4) {
-        s6_known_mass_g -= pow10(4-sub_state);
-        if (s6_known_mass_g < 10) s6_known_mass_g = 10;
-      } 
-      else s6_known_mass_ok = !s6_known_mass_ok;
-      break;
-    }
-    case 7: 
-    case 10: {
-      sub_state = (sub_state+1) % 2;
-      break;
-    }
-    case 12:
-    case 17: {
-      sub_state = (sub_state+2) % 3;
-      break;
-    }    
-    case 15: {
-      if (sub_state < 3) {
-        s12_target_g -= pow10(4-sub_state);
-        if (s12_target_g < 100) s12_target_g = 100;
-      } 
-      else s15_target_ok = !s15_target_ok;
-      break;
-    }
-    case 16: {
-      if (sub_state < 3) {
-        s12_tara_offset_g -= pow10(3-sub_state);
-        if (s12_tara_offset_g < 10) s12_tara_offset_g = 10;
-      } 
-      else s16_tara_offset_ok = !s16_tara_offset_ok;
-      break;
-    }
-    case 20: {
-      if (sub_state < 3) {
-        s17_target_g -= pow10(4-sub_state);
-        if (s17_target_g < 100) s17_target_g = 100;
-      } 
-      else s20_target_ok = !s20_target_ok;
-      break;
-    }
-    case 21: {
-      if (sub_state < 3) {
-        s17_tara_offset_g -= pow10(3-sub_state);
-        if (s17_tara_offset_g < 10) s17_tara_offset_g = 10;
-      } 
-      else s21_tara_offset_ok = !s21_tara_offset_ok;
-      break;
-    }
-    case 22: {
-      sub_state = (sub_state+2) % 3;
-      break;
-    }
-    case 25: {
-      if (sub_state < 3) {
-        s22_target_g -= pow10(4-sub_state);
-        if (s22_target_g < 100) s22_target_g = 100;
-      } 
-      else s22_target_ok = !s22_target_ok;
-      break;
-    }
-    case 26: {
-      sub_state = (sub_state+5) % 6;
-      break;
-    }
-    case 27: {
-      sub_state = (sub_state+1) % 2;
-      break;
-    }
-    default: {
-      redraw_screen = false;
-      beep = false;
-    }
-  }
-
-  if (beep && use_keytones) tone(PIN_BEEP, BEEP_FREQ_LEFT, BEEP_LENGTH_TURN);
-  
-  #ifdef SERIAL_ENABLED
-  Serial.println("Rotary turned left.");
-  #endif
-}
+void onTurnRight() { onTurn(); }
+void onTurnLeft() { onTurn(true); }
 
 void shortClick_enc(bool beep = true) {
   switch (state) {
