@@ -251,27 +251,19 @@ void drawScreenForState(uint8_t targetState) {
       lcd.write(0);
       break;
     }
-    case 7: {
-      lcd.print(F("Kal. speichern?"));
-      lcd.setCursor(3,1);
-      lcd.print(F("Ja     Nein"));
-      break;
-    }
+    case 7:
     case 10: {
-      lcd.print(F("Tara speichern?"));
+      if (targetState == 7) lcd.print(F("Kal. speichern?"));
+      else lcd.print(F("Tara speichern?"));
       lcd.setCursor(3,1);
       lcd.print(F("Ja     Nein"));
       break;
     }
-    case 12: {
-      lcd.print(F("  --.-/--.-  VE1"));
-      lcd.setCursor(0,1);
-      lcd.print(F("  START  TV-.--"));
-      redraw_screen = true;
-      break;
-    }
+    case 12:
     case 17: {
-      lcd.print(F("  --.-/--.-  VE2"));
+      lcd.print(F("  --.-/--.-  VE"));
+      if (targetState==12) lcd.write('1');
+      else lcd.write('2');
       lcd.setCursor(0,1);
       lcd.print(F("  START  TV-.--"));
       redraw_screen = true;
@@ -290,8 +282,8 @@ void drawScreenForState(uint8_t targetState) {
     case 18:
     case 23: {
       lcd.print(F("  --.-/--.-  VE"));
-      if (state==23) lcd.write(2);
-      else if (state==13) lcd.write('1');
+      if (targetState==23) lcd.write(2);
+      else if (targetState==13) lcd.write('1');
       else lcd.write('2');
       lcd.setCursor(0,1);
       lcd.print(F("  aktiv   STOPP!"));
@@ -306,8 +298,8 @@ void drawScreenForState(uint8_t targetState) {
       long secs = t_last_target_duration / 1000;
       lcd.write(1);
       lcd.print(F(" --.-/--.-  VE"));
-      if (state==24) lcd.write(2);
-      else if (state==14) lcd.write('1');
+      if (targetState==24) lcd.write(2);
+      else if (targetState==14) lcd.write('1');
       else lcd.write('2');
       drawCurrentWeight(&last_target_done_g);
       drawTragetWeight(&last_target_g);
