@@ -512,9 +512,6 @@ void onTurn(bool left = false) {
   #endif
 }
 
-void onTurnRight() { onTurn(); }
-void onTurnLeft() { onTurn(true); }
-
 void shortClick_enc(bool beep = true) {
   switch (state) {
     case 2: {
@@ -716,10 +713,10 @@ void shortClick_enc(bool beep = true) {
   #endif
 }
 
-// das ist nötig, um die Signatur von CtrlBtn::CallbackFunction {aka void (*)()} zu erfüllen.
-void shortClick_enc() {
-  shortClick_enc(true);
-}
+// das ist nötig, um die Signaturen von CtrlBtn::CallbackFunction {aka void (*)()} zu erfüllen.
+void shortClick_enc() { shortClick_enc(true); }
+void onTurnRight() { onTurn(); }
+void onTurnLeft() { onTurn(true); }
 
 void longClick_enc() {
   static bool beep;
@@ -1162,7 +1159,7 @@ void loop() {
     disableOutput();
   }
 
-  // skip the rest of loop for certain states
+  // Für manche Zustaände wird der Rest des loop übersprungen, weil unnötig
   if (break_loop) {
     #ifdef SERIAL_ENABLED
     Serial.println(F("The loop has been broken. Just like my heart <|3"));
@@ -1170,10 +1167,11 @@ void loop() {
     return;
   }
 
+  // Dreh-Drück-Knopf Änderungen verarbeiten (Library)
   encoder.process();
   btn_enc.process();
 
-  // read the mode selection switch
+  // VE-Wahl-Schalter prüfen
   if (t - t_switch > t_intv_switch) {
     t_switch = t;
     sw_pos_pre = sw_pos;
@@ -1184,42 +1182,26 @@ void loop() {
     if (sw_pos != sw_pos_pre) sw_event = true;
   }
 
-  // handle switch change event
+  // VE-Wahl-Schalter Änderung verarbeiten
   if (sw_event) {
-    switch (sw_pos) {
-      case 0: {
-        #ifdef SERIAL_ENABLED
-        Serial.println("Switch changed to position 0.");
-        #endif
+    #ifdef SERIAL_ENABLED
+    Serial.print("Switch changed to position ");
+    Serial.println(sw_pos);
+    #endif
 
-        if (use_keytones) tone(PIN_BEEP, 440, 150);
-        break;
-      }
-      case 1: {
-        #ifdef SERIAL_ENABLED
-        Serial.println("Switch changed to position 1.");
-        #endif
+    if (use_keytones) tone(PIN_BEEP, 440, 150);
 
-        if (use_keytones) tone(PIN_BEEP, 440, 150);
-        break;
-      }
-      case 2: {
-        #ifdef SERIAL_ENABLED
-        Serial.println("Switch changed to position 2.");
-        #endif
-
-        if (use_keytones) tone(PIN_BEEP, 440, 150);
-        break;
-      }
-    }
-
-    // TODO
-    //if (state > 8 && state < 27)
-    stateTransition(11);
-    sw_event = false;
+    // Änderung bewirkt immer einen Übergang in Zustand 11, außer bei einigen Zustaänden
+    if ( state == 9 || state == 91 || state == 10  || state ==  101 // Tara-Prozess
+      || state == 4 || state == 41 || state == 5 || state == 6 || state == 61 || state == 7 || state == 71 // Kalibrierungs-Prozess
+    ) return;
+    else {
+      stateTransition(11);
+      sw_event = false;
+    }    
   }
 
-  // refresh screen if required
+  // Bildschrim aktualisieren, wenn erforderlich
   if (t - t_screen > t_intv_screen && redraw_screen) {
     t_screen = t;
     redraw_screen = false;
