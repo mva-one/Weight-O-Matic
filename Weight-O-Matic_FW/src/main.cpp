@@ -6,12 +6,12 @@
 #include <CtrlBtn.h>
 #include <CtrlEnc.h>
 
-#define VERSION F("v0.7")
+#define VERSION F("v0.8")
 
 #define PIN_BEEP 9              // 9 <-(rot)-> Piepser
 #define PIN_SW_1 5              // 5 <-(braun)-> Schalter 'I'
-#define PIN_SW_COM 6            // 5 <-(schwarz)-> Schalter Common
-#define PIN_SW_2 7              // 5 <-(braun)-> Schalter 'II'
+#define PIN_SW_COM 6            // 6 <-(schwarz)-> Schalter Common
+#define PIN_SW_2 7              // 7 <-(braun)-> Schalter 'II'
 #define PIN_OUTPUT 8            // 8 <-(rot)-> Schaltmodul
 #define PIN_HX711_DAT 11        // 11 <-(grün)-> DT HX711
 #define PIN_HX711_SCK 10        // 10 <-(weiß)-> SCK HX711
@@ -24,9 +24,11 @@
 #define BEEP_FREQ_LEFT 1350
 #define BEEP_FREQ_RIGHT 1100
 #define BEEP_FREQ_CLICK 925
+#define BEEP_FREQ_ERR 440
 #define BEEP_LENGTH_TURN 15
 #define BEEP_LENGTH_SHORT 40
 #define BEEP_LENGTH_LONG 250
+#define BEEP_LENGTH_ERR 300
 
 // Tonhöhen in Hz und "Takt" für Ende-Melodie
 #define BEEP_FREQ_A5 880
@@ -40,6 +42,7 @@
 #define SERIAL_ENABLED
 
 // Standardwerte, werden bei leerem EEPROM geladen (z.B. auch nach dem Zurücksetzen über das Menü)
+#define DEFAULT_WEIGHT_TARGET_NO_PRESET 4200
 #define DEFAULT_CAL_FACTOR 28.44
 #define DEFAULT_TAR_OFFSET 8240259
 #define DEFAULT_P1_TARGET 5000
@@ -52,8 +55,11 @@
 #define MIN_WEIGHT_CALIB 10
 #define MAX_WEIGHT_SETPOINT 99990
 #define MIN_WEIGHT_SETPOINT 100
-#define MIN_WEIGHT_OFFSET 10
+#define MIN_WEIGHT_OFFSET 0
 #define MAX_WEIGHT_OFFSET 9990
+
+#define SETTINGS_KEYTONE 7
+#define SETTINGS_ENDTONE 6
 
 
 // EEPROM-Adressen für verschiedene Einstellungen:
@@ -71,57 +77,58 @@ const uint16_t addr_p2_saved_flag = 0x31;   // stores bool (1B) - addr. 0x31
 
 const uint16_t addr_toggle_settings = 0x32;       // stores byte      - addr. 0x32
 const uint16_t addr_settings_saved_flag = 0x33;   // stores bool (1B) - addr. 0x33
-// toggle settings bitvector content:
-// (MSB) 7 -> keytones enabled
-//       6 -> endtone enabled
 
-// Intervall (ms) zum Auslesen des Modus-Schalters
+// Intervall (ms) zum Auslesen des VE-Schalters
 const uint32_t t_intv_switch = 276;
+
+// Mindest-Intervall (ms) für die Display-Aktualisierung 
+const uint32_t t_intv_screen = 100; 
 
 // Timeout (ms) für Kommunikation mit Wiegezelle
 const uint32_t t_timeout_weight_reading = 2024;
 
-uint8_t sw_pos = 0;
-uint8_t sw_pos_pre = 0;
-bool sw_event = false;
-
-long s6_known_mass_g = 1550;
-bool s6_known_mass_ok = true;
 
 long current_weight_g = 13420;
-long s22_target_g = 5400;
-bool s22_target_ok = true;
 
-long s12_target_g = 11000;
-long s12_tara_offset_g = 1110;
-bool s15_target_ok = true;
-long s17_tara_offset_g = 2200;
-bool s16_tara_offset_ok = true;
-long s17_target_g = 22000;
-bool s20_target_ok = true;
-bool s21_tara_offset_ok = true;
+long p1_target_g = 11000;
+bool p1_target_ok = true;
+long p1_tara_offset_g = 1110;
+bool p1_tara_offset_ok = true;
+
+long p2_target_g = 22000;
+bool p2_target_ok = true;
+long p2_tara_offset_g = 2200;
+bool p2_tara_offset_ok = true;
+
+long p0_target_g = DEFAULT_WEIGHT_TARGET_NO_PRESET;
+bool p0_target_ok = true;
 
 long last_target_g = 0;
 long last_target_done_g = 0;
 long t_last_target_started = 0;
 long t_last_target_duration = 0;
 
-// Audio-Einstellungen
+long cal_known_mass_g = 1550;
+bool cal_known_mass_ok = true;
+
+uint8_t sw_pos = 0;
+uint8_t sw_pos_pre = 0;
+bool sw_event = false;
+
+// Audio
 bool use_keytones = true;
 bool use_endtone = true;
 int endtone_repetitions_done = 0;
 
-
 // LCD-Menü und Zustände
 bool redraw_screen = true;
-const uint32_t t_intv_screen = 100;
 uint8_t state = 0;
 uint8_t sub_state = 0;
 /* 
     Anmerkung des Entwicklers:
       Ja, die Zustandsnummern sind teilweise einfach völlig durcheinander. 
       Ja, das ist "historisch gewachsen"... ;)
-      Aber es funktioniert und ich will esnicht ändern.
+      Aber es funktioniert und ich will es nicht ändern.
  */
 
 // Status-Flag, ob der Ausgang aktiviert ist.
@@ -159,15 +166,15 @@ void enableOutput() {
 // Einstellungs-Bitvektor aus den aktuell aktiven Einstellungen erstellen
 uint8_t getToggleSettingsFromState() {
   uint8_t settings_bitvector = 0;
-  settings_bitvector = use_keytones ? settings_bitvector | 1 << 7 : settings_bitvector & ~ (1 << 7);
-  settings_bitvector = use_endtone ? settings_bitvector | 1 << 6 : settings_bitvector & ~ (1 << 6);
+  settings_bitvector = use_keytones ? settings_bitvector | 1 << SETTINGS_KEYTONE : settings_bitvector & ~ (1 << SETTINGS_KEYTONE);
+  settings_bitvector = use_endtone ? settings_bitvector | 1 << SETTINGS_ENDTONE : settings_bitvector & ~ (1 << SETTINGS_ENDTONE);
   return settings_bitvector;
 }
 
 // Aktive Einstellungen aus Einstellungs-Bitvektor übernehmen
 void setToggleSettingsFromBitvector(uint8_t settings_bitvector) {
-  use_keytones = (settings_bitvector & (1 << 7)) >> 7;
-  use_endtone = (settings_bitvector & (1 << 6)) >> 6;
+  use_keytones = (settings_bitvector & (1 << SETTINGS_KEYTONE)) >> SETTINGS_KEYTONE;
+  use_endtone = (settings_bitvector & (1 << SETTINGS_ENDTONE)) >> SETTINGS_ENDTONE;
 }
 
 void drawCurrentWeight(long* weigth, long* offset = nullptr) {
@@ -350,7 +357,9 @@ void stateTransition(uint8_t targetState, uint8_t targetSubState = 0) {
   #endif
 
   switch (targetState) {
-    case 2: 
+    case 2: {
+      tone(PIN_BEEP, BEEP_FREQ_ERR, BEEP_LENGTH_ERR);
+    }
     case 4:
     case 5:
     case 6:
@@ -382,7 +391,7 @@ void stateTransition(uint8_t targetState, uint8_t targetSubState = 0) {
       break;
     }
     case 25: {
-      s22_target_ok = true;
+      p0_target_ok = true;
       redraw_screen = true;
       //drawScreenForState(25);
       break;
@@ -399,14 +408,14 @@ void onTurn(bool left = false) {
     case 6: {
       if (sub_state < 4) {
         if (left) {
-          s6_known_mass_g -= pow10(4-sub_state);
-          if (s6_known_mass_g < MIN_WEIGHT_CALIB) s6_known_mass_g = MIN_WEIGHT_CALIB;
+          cal_known_mass_g -= pow10(4-sub_state);
+          if (cal_known_mass_g < MIN_WEIGHT_CALIB) cal_known_mass_g = MIN_WEIGHT_CALIB;
         } else {
-          s6_known_mass_g += pow10(4-sub_state);
-          if (s6_known_mass_g > MAX_WEIGHT_CALIB) s6_known_mass_g = MAX_WEIGHT_CALIB;
+          cal_known_mass_g += pow10(4-sub_state);
+          if (cal_known_mass_g > MAX_WEIGHT_CALIB) cal_known_mass_g = MAX_WEIGHT_CALIB;
         }
       } 
-      else s6_known_mass_ok = !s6_known_mass_ok;
+      else cal_known_mass_ok = !cal_known_mass_ok;
       break;
     }
     case 7: 
@@ -424,66 +433,66 @@ void onTurn(bool left = false) {
     case 15: {
       if (sub_state < 3) {
         if (left) {
-          s12_target_g -= pow10(4-sub_state);
-          if (s12_target_g < MIN_WEIGHT_SETPOINT) s12_target_g = MIN_WEIGHT_SETPOINT;
+          p1_target_g -= pow10(4-sub_state);
+          if (p1_target_g < MIN_WEIGHT_SETPOINT) p1_target_g = MIN_WEIGHT_SETPOINT;
         } else {
-          s12_target_g += pow10(4-sub_state);
-          if (s12_target_g > MAX_WEIGHT_SETPOINT) s12_target_g = MAX_WEIGHT_SETPOINT;
+          p1_target_g += pow10(4-sub_state);
+          if (p1_target_g > MAX_WEIGHT_SETPOINT) p1_target_g = MAX_WEIGHT_SETPOINT;
         }
       } 
-      else s15_target_ok = !s15_target_ok;
+      else p1_target_ok = !p1_target_ok;
       break;
     }
     case 16: {
       if (sub_state < 3) {
         if (left) {
-          s12_tara_offset_g -= pow10(3-sub_state);
-          if (s12_tara_offset_g < MIN_WEIGHT_OFFSET) s12_tara_offset_g = MIN_WEIGHT_OFFSET;
+          p1_tara_offset_g -= pow10(3-sub_state);
+          if (p1_tara_offset_g < MIN_WEIGHT_OFFSET) p1_tara_offset_g = MIN_WEIGHT_OFFSET;
         } else {
-          s12_tara_offset_g += pow10(3-sub_state);
-          if (s12_tara_offset_g > MAX_WEIGHT_OFFSET) s12_tara_offset_g = MAX_WEIGHT_OFFSET;
+          p1_tara_offset_g += pow10(3-sub_state);
+          if (p1_tara_offset_g > MAX_WEIGHT_OFFSET) p1_tara_offset_g = MAX_WEIGHT_OFFSET;
         }
       } 
-      else s16_tara_offset_ok = !s16_tara_offset_ok;
+      else p1_tara_offset_ok = !p1_tara_offset_ok;
       break;
     }
     case 20: {
       if (sub_state < 3) {
         if (left) {
-          s17_target_g -= pow10(4-sub_state);
-          if (s17_target_g < MIN_WEIGHT_SETPOINT) s17_target_g = MIN_WEIGHT_SETPOINT;
+          p2_target_g -= pow10(4-sub_state);
+          if (p2_target_g < MIN_WEIGHT_SETPOINT) p2_target_g = MIN_WEIGHT_SETPOINT;
         } else {
-          s17_target_g += pow10(4-sub_state);
-          if (s17_target_g > MAX_WEIGHT_SETPOINT) s17_target_g = MAX_WEIGHT_SETPOINT;
+          p2_target_g += pow10(4-sub_state);
+          if (p2_target_g > MAX_WEIGHT_SETPOINT) p2_target_g = MAX_WEIGHT_SETPOINT;
         }
       } 
-      else s20_target_ok = !s20_target_ok;
+      else p2_target_ok = !p2_target_ok;
       break;
     }
     case 21: {
       if (sub_state < 3) {
         if (left) {
-          s17_tara_offset_g -= pow10(3-sub_state);
-          if (s17_tara_offset_g < MIN_WEIGHT_OFFSET) s17_tara_offset_g = MIN_WEIGHT_OFFSET;
+          p2_tara_offset_g -= pow10(3-sub_state);
+          if (p2_tara_offset_g < MIN_WEIGHT_OFFSET) p2_tara_offset_g = MIN_WEIGHT_OFFSET;
         } else {
-          s17_tara_offset_g += pow10(3-sub_state);
-          if (s17_tara_offset_g > MAX_WEIGHT_OFFSET) s17_tara_offset_g = MAX_WEIGHT_OFFSET;
+          p2_tara_offset_g += pow10(3-sub_state);
+          if (p2_tara_offset_g > MAX_WEIGHT_OFFSET) p2_tara_offset_g = MAX_WEIGHT_OFFSET;
         }
       } 
-      else s21_tara_offset_ok = !s21_tara_offset_ok;
+      else p2_tara_offset_ok = !p2_tara_offset_ok;
       break;
     }
     case 25: {
       if (sub_state < 3) {
         if (left) {
-          s22_target_g -= pow10(4-sub_state);
-          if (s22_target_g < MIN_WEIGHT_SETPOINT) s22_target_g = MIN_WEIGHT_SETPOINT;
+          p0_target_g -= pow10(4-sub_state);
+          if (p0_target_g < MIN_WEIGHT_SETPOINT) p0_target_g = MIN_WEIGHT_SETPOINT;
         } else {
-          s22_target_g += pow10(4-sub_state);
-          if (s22_target_g > MAX_WEIGHT_SETPOINT) s22_target_g = MAX_WEIGHT_SETPOINT;
+          p0_target_g += pow10(4-sub_state);
+          if (p0_target_g > MAX_WEIGHT_SETPOINT) p0_target_g = MAX_WEIGHT_SETPOINT;
         }
       } 
-      else s22_target_ok = !s22_target_ok;
+      else p0_target_ok = !p0_target_ok;
       break;
     }
     case 26: {
@@ -519,11 +528,11 @@ void shortClick_enc(bool beep = true) {
       break;
     }
     case 6: {
-      if (sub_state == 4 && s6_known_mass_ok) {
+      if (sub_state == 4 && cal_known_mass_ok) {
         stateTransition(61);
       }
       else {
-        s6_known_mass_ok = true;
+        cal_known_mass_ok = true;
         sub_state = (sub_state+1) % 5;
         redraw_screen = true;
       }
@@ -594,36 +603,36 @@ void shortClick_enc(bool beep = true) {
       break;
     }
     case 15: {
-      if (sub_state == 3 && s15_target_ok) stateTransition(151);
+      if (sub_state == 3 && p1_target_ok) stateTransition(151);
       else {
-        s15_target_ok = true;
+        p1_target_ok = true;
         sub_state = (sub_state+1) % 4;
         redraw_screen = true;
       }
       break;
     }
     case 16: {
-      if (sub_state == 3 && s16_tara_offset_ok) stateTransition(151);
+      if (sub_state == 3 && p1_tara_offset_ok) stateTransition(151);
       else {
-        s16_tara_offset_ok = true;
+        p1_tara_offset_ok = true;
         sub_state = (sub_state+1) % 4;
         redraw_screen = true;
       }
       break;
     }
     case 20: {
-      if (sub_state == 3 && s20_target_ok) stateTransition(201);
+      if (sub_state == 3 && p2_target_ok) stateTransition(201);
       else {
-        s20_target_ok = true;
+        p2_target_ok = true;
         sub_state = (sub_state+1) % 4;
         redraw_screen = true;
       }
       break;
     }
     case 21: {
-      if (sub_state == 3 && s21_tara_offset_ok) stateTransition(201);
+      if (sub_state == 3 && p2_tara_offset_ok) stateTransition(201);
       else {
-        s21_tara_offset_ok = true;
+        p2_tara_offset_ok = true;
         sub_state = (sub_state+1) % 4;
         redraw_screen = true;
       }
@@ -648,9 +657,9 @@ void shortClick_enc(bool beep = true) {
       break;
     }
     case 25: {
-      if (sub_state == 3 && s22_target_ok) stateTransition(22);
+      if (sub_state == 3 && p0_target_ok) stateTransition(22);
       else {
-        s22_target_ok = true;
+        p0_target_ok = true;
         sub_state = (sub_state+1) % 4;
         redraw_screen = true;
       }
@@ -705,14 +714,11 @@ void shortClick_enc(bool beep = true) {
   #endif
 }
 
-// das ist nötig, um die Signaturen von CtrlBtn::CallbackFunction {aka void (*)()} zu erfüllen.
-void shortClick_enc() { shortClick_enc(true); }
-void onTurnRight() { onTurn(); }
-void onTurnLeft() { onTurn(true); }
-
 void longClick_enc() {
   static bool beep;
+  static bool beep_error;
   beep = true;
+  beep_error = false;
 
   switch (state) {
     case 4:
@@ -734,7 +740,10 @@ void longClick_enc() {
       break;
     }
     case 12: {
-      if (sub_state == 0) stateTransition(13);
+      if (sub_state == 0) {
+        if (current_weight_g - p1_tara_offset_g < p1_target_g) stateTransition(13);
+        else beep_error = true;
+      }
       break;
     }
     case 15:
@@ -748,11 +757,17 @@ void longClick_enc() {
       break;
     }
     case 17: {
-      if (sub_state == 0) stateTransition(18);
+      if (sub_state == 0) {
+        if (current_weight_g - p2_tara_offset_g < p2_target_g) stateTransition(18);
+        else beep_error = true;
+      }
       break;
     }
     case 22: {
-      if (sub_state == 0) stateTransition(23);
+      if (sub_state == 0) {
+        if (current_weight_g < p0_target_g) stateTransition(23);
+        else beep_error = true;
+      }
       break;
     }
     default: {
@@ -761,12 +776,18 @@ void longClick_enc() {
     }
   }
   
+  if (beep_error && use_keytones) { tone(PIN_BEEP, BEEP_FREQ_ERR, BEEP_LENGTH_ERR); beep = false; }
   if (beep && use_keytones) tone(PIN_BEEP, BEEP_FREQ_CLICK, BEEP_LENGTH_LONG);
   
   #ifdef SERIAL_ENABLED
   Serial.println("Rotary button long click.");
   #endif
 }
+
+// das ist nötig, um die Signaturen von CtrlBtn::CallbackFunction {aka void (*)()} zu erfüllen.
+void shortClick_enc() { shortClick_enc(true); }
+void onTurnRight() { onTurn(); }
+void onTurnLeft() { onTurn(true); }
 
 // Hardware aus Libraries
 CtrlEnc   encoder   (PIN_ENCODER_CLK, PIN_ENCODER_DAT, onTurnRight, onTurnLeft);
@@ -822,43 +843,43 @@ void setup() {
 
   // Prüfen, ob im EEPROM Werte für Kalibrierung und Tara gespeichert sind. Wenn nicht, Standardwerte laden:
   uint8_t saved_flag = 0;
-  EEPROM.get(addr_saved_flag, saved_flag);
-  if (saved_flag != 1) {
+  saved_flag = EEPROM.read(addr_saved_flag);
+  if (saved_flag != 169) {
     EEPROM.put(addr_cal_value, DEFAULT_CAL_FACTOR);
     EEPROM.put(addr_tar_value, DEFAULT_TAR_OFFSET);
-    EEPROM.put(addr_saved_flag, (uint8_t)1);
+    EEPROM.write(addr_saved_flag, (uint8_t)169);
     #ifdef SERIAL_ENABLED
     Serial.println(F("Keine Kalibrierungswerte im EEPROM gefunden, Standardwerte geladen!"));
     #endif
   }
 
   // ...das Gleiche für die EInstellungen:
-  EEPROM.get(addr_settings_saved_flag, saved_flag);
-  if (saved_flag != 1) {
+  saved_flag = EEPROM.read(addr_settings_saved_flag);
+  if (saved_flag != 169) {
     EEPROM.put(addr_toggle_settings, DEFAULT_TOGGLESETTINGS);
-    EEPROM.put(addr_settings_saved_flag, (uint8_t)1);
+    EEPROM.write(addr_settings_saved_flag, (uint8_t)169);
     #ifdef SERIAL_ENABLED
     Serial.println(F("Keine gespeicherten allg. Einstellungen im EEPROM gefunden, Standardwerte geladen!"));
     #endif
   }
 
   // ...für Voreinstellung 1:
-  EEPROM.get(addr_p1_saved_flag, saved_flag);
-  if (saved_flag != 1) {
+  saved_flag = EEPROM.read(addr_p1_saved_flag);
+  if (saved_flag != 169) {
     EEPROM.put(addr_p1_target, DEFAULT_P1_TARGET);
     EEPROM.put(addr_p1_offset, DEFAULT_P1_OFFSET);
-    EEPROM.put(addr_p1_saved_flag, (uint8_t)1);
+    EEPROM.write(addr_p1_saved_flag, (uint8_t)169);
     #ifdef SERIAL_ENABLED
     Serial.println(F("Keine gespeicherten Einstellungen für VE 1 im EEPROM gefunden, Standardwerte geladen!"));
     #endif
   }
 
   // ...für Voreinstellung 2:
-  EEPROM.get(addr_p2_saved_flag, saved_flag);
-  if (saved_flag != 1) {
+  saved_flag = EEPROM.read(addr_p2_saved_flag);
+  if (saved_flag != 169) {
     EEPROM.put(addr_p2_target, DEFAULT_P2_TARGET);
     EEPROM.put(addr_p2_offset, DEFAULT_P2_OFFSET);
-    EEPROM.put(addr_p2_saved_flag, (uint8_t)1);
+    EEPROM.write(addr_p2_saved_flag, (uint8_t)169);
     #ifdef SERIAL_ENABLED
     Serial.println(F("Keine gespeicherten Einstellungen für VE 2 im EEPROM gefunden, Standardwerte geladen!"));
     #endif
@@ -892,15 +913,15 @@ void setup() {
   #endif
 
   // Einstellungen für VE 1 laden
-  EEPROM.get(addr_p1_target, s12_target_g);
-  EEPROM.get(addr_p1_offset, s12_tara_offset_g);
+  EEPROM.get(addr_p1_target, p1_target_g);
+  EEPROM.get(addr_p1_offset, p1_tara_offset_g);
   #ifdef SERIAL_ENABLED
   Serial.println(F("Gespeicherte Einstellungen für VE 1 erfolgreich geladen!"));
   #endif
 
   // Einstellungen für VE 2 laden
-  EEPROM.get(addr_p2_target, s17_target_g);
-  EEPROM.get(addr_p2_offset, s17_tara_offset_g);
+  EEPROM.get(addr_p2_target, p2_target_g);
+  EEPROM.get(addr_p2_offset, p2_tara_offset_g);
   #ifdef SERIAL_ENABLED
   Serial.println(F("Gespeicherte Einstellungen für VE 2 erfolgreich geladen!"));
   #endif
@@ -977,23 +998,23 @@ void loop() {
       break;
     }
     case 13: {
-      last_target_done_g = current_weight_g - s12_tara_offset_g;
+      last_target_done_g = current_weight_g - p1_tara_offset_g;
       t_last_target_duration = t - t_last_target_started;
-      if (current_weight_g - s12_tara_offset_g >= s12_target_g) stateTransition(14, 1);
-      else if (!output_enabled && current_weight_g - s12_tara_offset_g < s12_target_g) {
+      if (current_weight_g - p1_tara_offset_g >= p1_target_g) stateTransition(14, 1);
+      else if (!output_enabled && current_weight_g - p1_tara_offset_g < p1_target_g) {
         t_last_target_started = t;
-        last_target_g = s12_target_g;
+        last_target_g = p1_target_g;
         enableOutput();
       }
       break;
     }
     case 18: {
-      last_target_done_g = current_weight_g - s17_tara_offset_g;
+      last_target_done_g = current_weight_g - p2_tara_offset_g;
       t_last_target_duration = t - t_last_target_started;
-      if (current_weight_g - s17_tara_offset_g >= s17_target_g) stateTransition(19, 1); 
-      else if (!output_enabled && current_weight_g - s17_tara_offset_g < s17_target_g) {
+      if (current_weight_g - p2_tara_offset_g >= p2_target_g) stateTransition(19, 1); 
+      else if (!output_enabled && current_weight_g - p2_tara_offset_g < p2_target_g) {
         t_last_target_started = t;
-        last_target_g = s17_target_g;
+        last_target_g = p2_target_g;
         enableOutput();
       }
       break;
@@ -1001,10 +1022,10 @@ void loop() {
     case 23: {
       last_target_done_g = current_weight_g;
       t_last_target_duration = t - t_last_target_started;
-      if (current_weight_g >= s22_target_g) stateTransition(24, 1);
-      else if (!output_enabled && current_weight_g < s22_target_g) {
+      if (current_weight_g >= p0_target_g) stateTransition(24, 1);
+      else if (!output_enabled && current_weight_g < p0_target_g) {
         t_last_target_started = t;
-        last_target_g = s22_target_g;
+        last_target_g = p0_target_g;
         enableOutput();
       }
       break;
@@ -1074,7 +1095,7 @@ void loop() {
     case 61: {
       loadcell.update();
       loadcell.refreshDataSet();
-      float cal_value = loadcell.getNewCalibration(s6_known_mass_g);
+      float cal_value = loadcell.getNewCalibration(cal_known_mass_g);
       #ifdef SERIAL_ENABLED
       Serial.print(F("(61) Kalibrierung abgeschlossen. Neuer Wert für cal_value: "));
       Serial.println(cal_value);
@@ -1087,7 +1108,7 @@ void loop() {
       long tar_value = loadcell.getTareOffset();
       EEPROM.put(addr_cal_value, cal_value);
       EEPROM.put(addr_tar_value, tar_value);
-      EEPROM.put(addr_saved_flag, (uint8_t)1);
+      EEPROM.put(addr_saved_flag, (uint8_t)169);
       #ifdef SERIAL_ENABLED
       Serial.print(F("(71) Kalibrierungswerte im EEPROM gespeichert: "));
       Serial.print(cal_value);
@@ -1112,7 +1133,7 @@ void loop() {
     case 101: {
       long tar_value = loadcell.getTareOffset();
       EEPROM.put(addr_tar_value, tar_value);
-      EEPROM.put(addr_saved_flag, (uint8_t)1);
+      EEPROM.put(addr_saved_flag, (uint8_t)169);
       #ifdef SERIAL_ENABLED
       Serial.print(F("(101) Tara-Offset im EEPROM gespeichert: "));
       Serial.println(tar_value);
@@ -1121,25 +1142,25 @@ void loop() {
       break;
     }
     case 151: {
-      EEPROM.put(addr_p1_target, s12_target_g);
-      EEPROM.put(addr_p1_offset, s12_tara_offset_g);
+      EEPROM.put(addr_p1_target, p1_target_g);
+      EEPROM.put(addr_p1_offset, p1_tara_offset_g);
       #ifdef SERIAL_ENABLED
       Serial.print(F("(151) Sollwert / Tara-Versatz für VE 1 im EEPROM gespeichert: "));
-      Serial.print(s12_target_g);
+      Serial.print(p1_target_g);
       Serial.print(F(" / "));
-      Serial.println(s12_tara_offset_g);
+      Serial.println(p1_tara_offset_g);
       #endif
       stateTransition(12);
       break;
     }
     case 201: {
-      EEPROM.put(addr_p2_target, s17_target_g);
-      EEPROM.put(addr_p2_offset, s17_tara_offset_g);
+      EEPROM.put(addr_p2_target, p2_target_g);
+      EEPROM.put(addr_p2_offset, p2_tara_offset_g);
       #ifdef SERIAL_ENABLED
       Serial.print(F("(201) Sollwert / Tara-Versatz für VE 2 im EEPROM gespeichert: "));
-      Serial.print(s17_target_g);
+      Serial.print(p2_target_g);
       Serial.print(F(" / "));
-      Serial.println(s17_tara_offset_g);
+      Serial.println(p2_tara_offset_g);
       #endif
       stateTransition(17);
       break;
@@ -1174,25 +1195,6 @@ void loop() {
     if (sw_pos != sw_pos_pre) sw_event = true;
   }
 
-  // VE-Wahl-Schalter Änderung verarbeiten
-  if (sw_event) {
-    #ifdef SERIAL_ENABLED
-    Serial.print("Switch changed to position ");
-    Serial.println(sw_pos);
-    #endif
-
-    if (use_keytones) tone(PIN_BEEP, 440, 150);
-
-    // Änderung bewirkt immer einen Übergang in Zustand 11, außer bei einigen Zustaänden
-    if ( state == 9 || state == 91 || state == 10  || state ==  101 // Tara-Prozess
-      || state == 4 || state == 41 || state == 5 || state == 6 || state == 61 || state == 7 || state == 71 // Kalibrierungs-Prozess
-    ) return;
-    else {
-      stateTransition(11);
-      sw_event = false;
-    }    
-  }
-
   // Bildschrim aktualisieren, wenn erforderlich
   if (t - t_screen > t_intv_screen && redraw_screen) {
     t_screen = t;
@@ -1201,13 +1203,13 @@ void loop() {
     switch(state) {
       case 6: {
         lcd.setCursor(3,1);
-        lcd.print(s6_known_mass_g/10000);
-        lcd.print(s6_known_mass_g % 10000 / 1000);
+        lcd.print(cal_known_mass_g/10000);
+        lcd.print(cal_known_mass_g % 10000 / 1000);
         lcd.write('.');
-        lcd.print(s6_known_mass_g % 1000 / 100);
-        lcd.print(s6_known_mass_g % 100 / 10);
+        lcd.print(cal_known_mass_g % 1000 / 100);
+        lcd.print(cal_known_mass_g % 100 / 10);
         lcd.print(F(" kg "));
-        if (s6_known_mass_ok) lcd.write(1); else lcd.write(4);
+        if (cal_known_mass_ok) lcd.write(1); else lcd.write(4);
         switch (sub_state) {
           case 0: { lcd.setCursor(3,1); break; }
           case 1: { lcd.setCursor(4,1); break; }
@@ -1231,13 +1233,13 @@ void loop() {
         lcd.setCursor(0,0);
         if (sub_state == 2) lcd.write(0); else lcd.write(' ');
         if (state == 12) {
-          drawCurrentWeight(&current_weight_g, &s12_tara_offset_g);
-          drawTragetWeight(&s12_target_g);
-          drawTaraOffsetValue(&s12_tara_offset_g);
+          drawCurrentWeight(&current_weight_g, &p1_tara_offset_g);
+          drawTragetWeight(&p1_target_g);
+          drawTaraOffsetValue(&p1_tara_offset_g);
         } else {
-          drawCurrentWeight(&current_weight_g, &s17_tara_offset_g);
-          drawTragetWeight(&s17_target_g);
-          drawTaraOffsetValue(&s17_tara_offset_g);
+          drawCurrentWeight(&current_weight_g, &p2_tara_offset_g);
+          drawTragetWeight(&p2_target_g);
+          drawTaraOffsetValue(&p2_tara_offset_g);
         }
         lcd.setCursor(1,1);
         if (sub_state == 0) lcd.write(0); else lcd.write(' ');
@@ -1246,8 +1248,8 @@ void loop() {
         break;
       }
       case 13: {
-        drawCurrentWeight(&current_weight_g, &s12_tara_offset_g);
-        drawTragetWeight(&s12_target_g);
+        drawCurrentWeight(&current_weight_g, &p1_tara_offset_g);
+        drawTragetWeight(&p1_target_g);
         break;
       }
       case 15:
@@ -1255,13 +1257,13 @@ void loop() {
         lcd.setCursor(0,0);
         lcd.write(0);
         if (state == 15) {
-          drawCurrentWeight(&current_weight_g, &s12_tara_offset_g);
-          drawTragetWeight(&s12_target_g);
-          if (s15_target_ok) lcd.write(1); else lcd.write(4);
+          drawCurrentWeight(&current_weight_g, &p1_tara_offset_g);
+          drawTragetWeight(&p1_target_g);
+          if (p1_target_ok) lcd.write(1); else lcd.write(4);
         } else {
-          drawCurrentWeight(&current_weight_g, &s17_tara_offset_g);
-          drawTragetWeight(&s17_target_g);
-          if (s20_target_ok) lcd.write(1); else lcd.write(4);
+          drawCurrentWeight(&current_weight_g, &p2_tara_offset_g);
+          drawTragetWeight(&p2_target_g);
+          if (p2_target_ok) lcd.write(1); else lcd.write(4);
         }
         
         switch (sub_state) {
@@ -1279,13 +1281,13 @@ void loop() {
         lcd.write(0);
         
         if (state == 16) {
-          drawCurrentWeight(&current_weight_g, &s12_tara_offset_g);
-          drawTaraOffsetValue(&s12_tara_offset_g);
-          if (s16_tara_offset_ok) lcd.write(1); else lcd.write(4);
+          drawCurrentWeight(&current_weight_g, &p1_tara_offset_g);
+          drawTaraOffsetValue(&p1_tara_offset_g);
+          if (p1_tara_offset_ok) lcd.write(1); else lcd.write(4);
         } else {
-          drawCurrentWeight(&current_weight_g, &s17_tara_offset_g);
-          drawTaraOffsetValue(&s17_tara_offset_g);
-          if (s21_tara_offset_ok) lcd.write(1); else lcd.write(4);
+          drawCurrentWeight(&current_weight_g, &p2_tara_offset_g);
+          drawTaraOffsetValue(&p2_tara_offset_g);
+          if (p2_tara_offset_ok) lcd.write(1); else lcd.write(4);
         }
 
         switch(sub_state) {
@@ -1298,15 +1300,15 @@ void loop() {
         break;
       }
       case 18: {
-        drawCurrentWeight(&current_weight_g, &s17_tara_offset_g);
-        drawTragetWeight(&s17_target_g);
+        drawCurrentWeight(&current_weight_g, &p2_tara_offset_g);
+        drawTragetWeight(&p2_target_g);
         break;
       }
       case 22: {
         lcd.setCursor(0,0);
         if (sub_state == 2) lcd.write(0); else lcd.write(' ');
         drawCurrentWeight(&current_weight_g);
-        drawTragetWeight(&s22_target_g);
+        drawTragetWeight(&p0_target_g);
         lcd.setCursor(1,1);
         if (sub_state == 0) lcd.write(0); else lcd.write(' ');
         lcd.setCursor(9,1);
@@ -1315,15 +1317,15 @@ void loop() {
       }
       case 23: {
         drawCurrentWeight(&current_weight_g);
-        drawTragetWeight(&s22_target_g);
+        drawTragetWeight(&p0_target_g);
         break;
       }
       case 25: {
         lcd.setCursor(0,0);
         lcd.write(0);
         drawCurrentWeight(&current_weight_g);
-        drawTragetWeight(&s22_target_g);
-        if (s22_target_ok) lcd.write(1); else lcd.write(4);
+        drawTragetWeight(&p0_target_g);
+        if (p0_target_ok) lcd.write(1); else lcd.write(4);
         switch (sub_state) {
           case 0: { lcd.setCursor(7,0); break; }
           case 1: { lcd.setCursor(8,0); break; }
@@ -1351,5 +1353,24 @@ void loop() {
         break;
       }
     }
+  }
+
+  // VE-Wahl-Schalter Änderung verarbeiten
+  if (sw_event) {
+    // Änderung bewirkt immer einen Übergang in Zustand 11, außer bei einigen Zustaänden
+    if ( state == 9 || state == 91 || state == 10  || state ==  101 // Tara-Prozess
+      || state == 4 || state == 41 || state == 5 || state == 6 || state == 61 || state == 7 || state == 71 // Kalibrierungs-Prozess
+    ) return;
+    else {
+      #ifdef SERIAL_ENABLED
+      Serial.print("Switch changed to position ");
+      Serial.println(sw_pos);
+      #endif
+
+      if (use_keytones) tone(PIN_BEEP, 440, 150);
+      
+      stateTransition(11);
+      sw_event = false;
+    }    
   }
 }
