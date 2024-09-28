@@ -1,0 +1,7 @@
+*-backups/*
+\#auto_saved_files\#
+~*
+*.kicad_prl
+
+# there is no PCB!
+*.kicad_pcb
